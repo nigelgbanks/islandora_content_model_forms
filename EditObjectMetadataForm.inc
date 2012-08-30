@@ -1,7 +1,5 @@
 <?php
 
-
-
 /*
  * @file
  *
@@ -158,8 +156,10 @@ class EditObjectMetadataForm {
     $form_name = $form_state['values']['forms'];
     $content_model_pid = $form_state['values']['content_model_pid'];
     $label_field = islandora_content_model_get_title_field($content_model_pid, $form_name);
-    eval('$label = $form_state[\'values\']' . $label_field . ';');
-    $this->setObjectLabel($pid, $label);
+    if (!empty($label_field)) {
+      eval('$label = $form_state[\'values\']' . $label_field . ';');
+      $this->setObjectLabel($pid, $label);
+    }
     $document = $this->modifyMetadata($pid, $dsid, $form, $form_state);
     $transform = islandora_content_model_get_transform($content_model_pid, $form_name);
     $this->transform($document, $transform, $pid, $label);

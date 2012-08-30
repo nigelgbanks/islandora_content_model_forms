@@ -59,11 +59,38 @@ class FOXML extends DOMDocument {
     $this->contentModelPid = $content_model_pid;
     $this->collectionPid = $collection_pid;
     $this->relationship = isset($relationship) ? $relationship : 'isMemberOfCollection';
-    $this->ingestFileLocations = $ingest_file_locations;
+    $this->ingestFileLocations = $this->fixIngestFiles($ingest_file_locations);
     $this->document = $document;
     $this->transform = $transform;
     $this->root = $this->createRootElement();
     $this->createDocument();
+  }
+  
+  private function fixHTTPSUrl ($external_url) {
+    global $base_url;
+    // Fedora has some problems getting files from HTTPS connections sometimes, so if we are getting a file
+    // from the local drupal, we try to pass a HTTP url instead of a HTTPS one.
+    if(stripos($external_url, 'https://') !== FALSE && stripos($external_url, $base_url) !== FALSE) {
+      $external_url = str_ireplace('https://', 'http://', $external_url);
+    }
+    return $external_url;
+  }
+  
+  /**
+   *
+   * @param array or string
+   * @return array or string after appling https fix
+   */
+  private function fixIngestFiles ($file_urls) {
+      if(is_array($file_urls)) {
+        foreach($file_urls as $dsID => $file_url) {
+          $file_urls[$dsID] = $this->fixHTTPSUrl($file_url);
+        }
+        return $file_urls;
+      }
+      else {
+        return $this->fixHTTPSUrl($file_urls);
+      }
   }
 
   private function createRootElement() {
@@ -204,33 +231,39 @@ class FOXML extends DOMDocument {
    * @return DOMElement
    */
   private function getPolicyStreamElement() {
-    module_load_include('inc', 'fedora_repository', 'ObjectHelper');
-    $object_helper = new ObjectHelper();
-    $policy_stream = $object_helper->getStream($this->collectionPid, 'CHILD_SECURITY', FALSE);
-    if (!isset($policy_stream)) {
-      return NULL; //there is no policy stream so object will not have a policy stream
+    module_load_include('inc', 'fedora_repository', 'api/fedora_item');
+    $item = new Fedora_Item($this->collectionPid);
+    if ($item->exists()) {
+      if (isset($item->datastreams['CHILD_SECURITY'])) {
+        $policy_stream = $item->get_datastream_dissemination('CHILD_SECURITY');
+        try {
+          $xml = new SimpleXMLElement($policy_stream);
+        } catch (Exception $exception) {
+          watchdog(t("Fedora_Repository"), t("Problem getting security policy."), NULL, WATCHDOG_ERROR);
+          drupal_set_message(t('Problem getting security policy: @e', array('@e' => $exception->getMessage())), 'error');
+          return FALSE;
+        }
+        $policy_element = $this->createDocumentFragment();
+        if (!$policy_element) {
+          drupal_set_message(t('Error parsing security policy stream.'));
+          watchdog(t("Fedora_Repository"), t("Error parsing security policy stream, could not parse policy stream."), NULL, WATCHDOG_NOTICE);
+          return FALSE;
+        }
+        $this->importNode($policy_element, TRUE);
+        $value = $policy_element->appendXML($policy_stream);
+        if (!$value) {
+          drupal_set_message(t('Error creating security policy stream.'));
+          watchdog(t("Fedora_Repository"), t("Error creating security policy stream, could not parse collection policy template file."), NULL, WATCHDOG_NOTICE);
+          return FALSE;
+        }
+        return $policy_element;
+      }
+      return NULL; // No policy stream
     }
-    try {
-      $xml = new SimpleXMLElement($policy_stream);
-    } catch (Exception $exception) {
-      watchdog(t("Fedora_Repository"), t("Problem getting security policy."), NULL, WATCHDOG_ERROR);
-      drupal_set_message(t('Problem getting security policy: @e', array('@e' => $exception->getMessage())), 'error');
-      return FALSE;
-    }
-    $policy_element = $this->createDocumentFragment();
-    if (!$policy_element) {
-      drupal_set_message(t('Error parsing security policy stream.'));
-      watchdog(t("Fedora_Repository"), t("Error parsing security policy stream, could not parse policy stream."), NULL, WATCHDOG_NOTICE);
-      return FALSE;
-    }
-    $this->importNode($policy_element, TRUE);
-    $value = $policy_element->appendXML($policy_stream);
-    if (!$value) {
-      drupal_set_message(t('Error creating security policy stream.'));
-      watchdog(t("Fedora_Repository"), t("Error creating security policy stream, could not parse collection policy template file."), NULL, WATCHDOG_NOTICE);
-      return FALSE;
-    }
-    return $policy_element;
+    // Object doesn't exist!
+    watchdog('fedora_repository', 'Collection %pid does not exist.', array('%pid' => $this->collectionPid), WATCHDOG_ERROR);
+    drupal_set_message(t('Collection %pid does not exist.', array('%pid' => $this->collectionPid)), 'error');
+    return FALSE;
   }
 
   /**
@@ -399,24 +432,28 @@ class FOXML extends DOMDocument {
     $ret = FALSE;
     try {
       $object = Fedora_Item::ingest_from_FOXML($this);
-
       if (!empty($object->pid)) {
-        drupal_set_message(t("Item !pid created successfully.", array('!pid' => l($object->pid, 'fedora/repository/' . $object->pid))), "status");
+        drupal_set_message(t("Item !pid created successfully.", array('!pid' => l($object->pid, 'fedora/repository/' . $object->pid))), 'status');
         $ret = TRUE;
       }
-      if (is_array($this->ingestFileLocations)) {
-        foreach ($this->ingestFileLocations as $file) {
-          file_delete($file);
-        }
-      }
-    } catch (exception $exception) {
-      drupal_set_message(t("Error ingesting object: @e", array('@e' => $exception->getMessage())), 'error');
-      watchdog(t("Fedora_Repository"), t("Error ingesting object: @e", array('@e' => $exception->getMessage())), NULL, WATCHDOG_ERROR);
-      // TODO is this necessary?
-      foreach ($this->ingestFileLocations as $file)
+    } catch (Exception $e) {
+      drupal_set_message(t('Error ingesting object: @e', array('@e' => $e->getMessage())), 'error');
+      $msg = 'Exception: "%e" in @f(@l)\n@t';
+      $vars = array(
+        '%e' => $e->getMessage(),
+        '@f' => $e->getFile(),
+        '@l' => $e->getLine(),
+        '@t' => $e->getTraceAsString()
+      );
+      watchdog('islandora_content_model_forms', $msg, $vars, NULL, WATCHDOG_ERROR);
+    }
+    if (is_array($this->ingestFileLocations)) {
+      foreach ($this->ingestFileLocations as $file) {
         file_delete($file);
+      }
     }
     return $ret;
   }
 
 }
+

@@ -66,6 +66,11 @@ class FOXML extends DOMDocument {
     $this->createDocument();
   }
   
+  /**
+   *
+   * @param string
+   * @return string after appling https fix
+   */
   private function fixHTTPSUrl ($external_url) {
     global $base_url;
     // Fedora has some problems getting files from HTTPS connections sometimes, so if we are getting a file
@@ -208,7 +213,7 @@ class FOXML extends DOMDocument {
       $parts[$n] = rawurlencode($part);
     }
     $path = implode('/', $parts);
-    $file_url = $base_url . '/' . $path;
+    $file_url = $this->fixHTTPSUrl($base_url . '/' . $path);
     $beginIndex = strrpos($file_url, '/');
     $dtitle = substr($file_url, $beginIndex + 1);
     $dtitle = urldecode($dtitle);
